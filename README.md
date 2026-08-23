@@ -8,7 +8,7 @@ A small single-threaded benchmark comparing:
 - SHA-256
 - SHA3-256
 
-The benchmark tests:
+The benchmark tests inputs of size:
 
 - 64 B
 - 4096 B
@@ -21,16 +21,13 @@ It reports:
 - Minimum time per byte
 - Maximum time per byte
 
-Times are measured with `std::time::Instant` and reported as nanoseconds
-per byte.
-
 ## Build and run
 
 ```sh
 cargo run --release
 ```
 
-The program prints its results to stdout and writes a file named
+The program prints its results to stdout and writes a graphical results file named
 
 ```text
 bench-hashes.svg
@@ -47,24 +44,34 @@ single-threaded execution, not operating-system-level multithreading.
 
 ## BLAKE3 backend reporting
 
-The benchmark reports the BLAKE3 backend used for the performance-dominant
-data path at each input size. Backend inferences are based on BLAKE3 v1.8.7.
+The benchmark reports the BLAKE3 implementation selected for the
+performance-dominant path at each input size. These inferences are based on
+BLAKE3 v1.8.7.
 
-BLAKE3 selects AVX-512, AVX2, SSE4.1, or SSE2 at runtime on x86. AArch64
-builds use four-way NEON for bulk hashing. Browser builds use BLAKE3's
-WebAssembly SIMD128 backend. WebAssembly does not use ARM NEON.
+On x86 and x86-64, BLAKE3 selects among AVX-512, AVX2, SSE4.1, SSE2, and the
+portable implementation according to runtime CPU features. Wider hash_many
+implementations can fall through to narrower implementations when the input
+does not fill a complete SIMD batch.
+
+AArch64 uses four-way NEON for bulk hashing. Its single-input compression path
+uses the portable compressor in BLAKE3 v1.8.7.
+
+Other native architectures are reported as portable by this package.
 
 ## Hash implementations
 
 BLAKE3 is provided by the `blake3` crate.
 
-SHA-256 is provided by RustCrypto's `sha2` crate. Optimized assembly is
-enabled, including the ARMv8 SHA-256 implementation on AArch64. Unsupported
-targets fall back to the portable implementation.
+SHA-256 is supplied by RustCrypto's sha2 crate. Its optimized assembly
+features are enabled, including the ARMv8 SHA-256 implementation on AArch64.
+Unsupported targets use the crate's portable fallback.
 
-SHA3-256 is provided by RustCrypto's `sha3` crate. Its optimized Keccak
-assembly implementation is enabled where supported, with a portable fallback
-elsewhere.
+SHA3-256 is supplied by RustCrypto's sha3 crate. Its optimized Keccak
+assembly feature is enabled where supported. Unsupported targets use the
+portable Keccak implementation.
+
+The resolved crate and assembly-source versions are included in stdout and in
+the SVG metadata.
 
 ## Interleaving
 
@@ -104,20 +111,10 @@ Release builds use:
 - Fat link-time optimization
 - One code-generation unit
 - Abort-on-panic
+- Disabled incremental compilation
 - `target-cpu=native`
 
 `target-cpu=native` allows Rust and LLVM to use every applicable instruction
 set exposed by the build machine. Consequently, a native executable may fail
 with an illegal-instruction error if copied to an older or otherwise
 incompatible CPU. Build the benchmark on the machine where it will run.
-
-The browser build does not use `target-cpu=native`. It requires WebAssembly
-SIMD128 and enables BLAKE3's Wasm SIMD128 backend.
-
-## Browser build
-
-The browser build displays the textual report and generated SVG together in
-the page. Since `std::time::Instant` is not reliably available on
-`wasm32-unknown-unknown`, the browser build uses `web_time::Instant`, whose
-browser implementation is backed by `performance.now()`. Native builds
-continue to use `std::time::Instant`.

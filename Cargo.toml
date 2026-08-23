@@ -5,61 +5,38 @@ edition = "2021"
 rust-version = "1.75"
 build = "build.rs"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[[bin]]
-name = "bench-hashes"
-path = "src/main.rs"
-
 [dependencies]
-# Rayon is not enabled. wasm32_simd has no effect on native targets.
+# Rayon is not enabled, so BLAKE3 remains single-threaded.
 blake3 = {
-    version = "*",
+    version = "1",
     default-features = false,
-    features = ["std", "wasm32_simd"]
+    features = ["std"]
 }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Use optimized native assembly, including ARMv8 SHA-256 instructions.
+# Use RustCrypto's optimized native assembly implementations.
 sha2 = {
-    version = "*",
+    version = "0.10",
     features = ["asm", "asm-aarch64"]
 }
 
-# Uses optimized Keccak assembly where keccak-asm supports the target.
 sha3 = {
-    version = "*",
+    version = "0.10",
     features = ["asm"]
 }
 
-sysinfo = "=0.30.13"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# Portable RustCrypto implementations compiled to Wasm SIMD/scalar code.
-sha2 = "*"
-sha3 = "*"
-
-# std::time::Instant is not reliably implemented by
-# wasm32-unknown-unknown. web-time exposes the same API using
-# performance.now() in browsers.
-web-time = "=1.1.0"
-js-sys = "=0.3.77"
-wasm-bindgen = "=0.2.100"
-web-sys = {
-    version = "=0.3.77",
-    features = [
-        "Document",
-        "Element",
-        "HtmlElement",
-        "Navigator",
-        "Node",
-        "Window",
-    ]
+# Machine metadata does not need sysinfo's multithread feature.
+sysinfo = {
+    version = "0.30",
+    default-features = false
 }
 
 [build-dependencies]
-sha2 = "*"
+# Used to fingerprint a dirty benchmark working tree.
+blake3 = {
+    version = "1",
+    default-features = false,
+    features = ["std"]
+}
 
 [profile.release]
 opt-level = 3

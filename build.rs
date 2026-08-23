@@ -1,8 +1,19 @@
-use sha2::{Digest, Sha256};
+use blake3::Hasher;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+fn hash_framed(
+    hasher: &mut Hasher,
+    label: &[u8],
+    contents: &[u8],
+) {
+    hasher.update(&(label.len() as u64).to_le_bytes());
+    hasher.update(label);
+    hasher.update(&(contents.len() as u64).to_le_bytes());
+    hasher.update(contents);
+}
 
 fn main() {
     let manifest_dir = PathBuf::from(
@@ -86,6 +97,28 @@ fn main() {
     emit_env("BENCH_TARGET_FEATURES", &target_features);
 }
 
+fn normalize_git_source(source: &str) -> String {
+    let source = source.trim().trim_end_matches(".git");
+
+    if let Some(rest) = source.strip_prefix("git@") {
+        let (host, path) = rest
+            .split_once(':')
+            .expect("scp-style Git source must contain ':'");
+
+        return format!("https://{host}/{path}");
+    }
+
+    if let Some(rest) = source.strip_prefix("ssh://git@") {
+        let (host, path) = rest
+            .split_once('/')
+            .expect("SSH Git source must contain a repository path");
+
+        return format!("https://{host}/{path}");
+    }
+
+    source.to_owned()
+}
+
 fn emit_git_metadata(repository: &Path) {
     let git_directory = git_text(
         repository,
@@ -129,10 +162,10 @@ fn emit_git_metadata(repository: &Path) {
         );
     }
 
-    let source = git_text(
+    let source = normalize_git_source(&git_text(
         repository,
-        &["config", "--get", "remote.origin.url"],
-    );
+        &["remote", "get-url", "origin"],
+    ));
 
     let commit = git_text(
         repository,
@@ -155,6 +188,7 @@ fn emit_git_metadata(repository: &Path) {
         &[
             "status",
             "--porcelain=v1",
+            "-z",
             "--untracked-files=all",
         ],
     );
@@ -162,18 +196,63 @@ fn emit_git_metadata(repository: &Path) {
     let clean_status = if status.is_empty() {
         "clean".to_owned()
     } else {
+        /*
+         * `git diff --binary HEAD` captures staged and unstaged changes to
+         * tracked files. Git does not include untracked-file contents in that
+         * diff, so hash those contents explicitly as well.
+         */
         let diff = git_bytes(
             repository,
             &["diff", "--binary", "HEAD", "--"],
         );
 
-        let mut hasher = Sha256::new();
-        hasher.update(b"git status\0");
-        hasher.update(&status);
-        hasher.update(b"\0git diff --binary HEAD\0");
-        hasher.update(&diff);
+        let untracked = git_bytes(
+            repository,
+            &[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+        );
 
-        format!("dirty-{:x}", hasher.finalize())
+        let mut hasher = Hasher::new();
+
+        hash_framed(
+            &mut hasher,
+            b"format",
+            b"bench-hashes dirty working tree v1",
+        );
+        hash_framed(&mut hasher, b"status", &status);
+        hash_framed(&mut hasher, b"diff", &diff);
+
+        for path_bytes in untracked
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+        {
+            let path = String::from_utf8(path_bytes.to_vec())
+                .expect("untracked Git paths must be UTF-8");
+
+            let contents = fs::read(repository.join(&path))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read untracked file {path:?}: {error}"
+                    )
+                });
+
+            hash_framed(
+                &mut hasher,
+                b"untracked path",
+                path.as_bytes(),
+            );
+            hash_framed(
+                &mut hasher,
+                b"untracked contents",
+                &contents,
+            );
+        }
+
+        format!("dirty-{}", hasher.finalize().to_hex())
     };
 
     emit_env("BENCH_GIT_SOURCE", &source);
@@ -261,7 +340,7 @@ fn package_description(
         if let Some(checksum) =
             quoted_field(package, "checksum")
         {
-            result.push_str("; checksum ");
+            result.push_str("; crate archive SHA-256 ");
             result.push_str(&checksum);
         }
 
