@@ -125,65 +125,76 @@ assert_version_greater() {
 set_manifest_version() {
     local new_version=$1
     local temporary
-    local status
+    local line
+    local in_package=0
+    local package_sections=0
+    local changed=0
 
     temporary=$(
         mktemp "${TMPDIR:-/tmp}/bench-hashes-Cargo.toml.XXXXXX"
     )
 
-    awk -v new_version="$new_version" '
-        BEGIN {
-            in_package = 0
-            changed = 0
-        }
-
-        /^[[:space:]]*$$package$$[[:space:]]*$/ {
-            in_package = 1
-            print
-            next
-        }
-
-        /^[[:space:]]*$$/ {
-            in_package = 0
-        }
-
-        in_package && /^[[:space:]]*version[[:space:]]*=/ {
-            print "version = \"" new_version "\""
-            changed++
-            next
-        }
-
-        {
-            print
-        }
-
-        END {
-            if (changed != 1) {
-                exit 42
-            }
-        }
-    ' Cargo.toml > "$temporary" || status=$?
-
-    status=${status:-0}
-
-    if [[ $status -ne 0 ]]; then
-        rm -f "$temporary"
-
-        if [[ $status -eq 42 ]]; then
-            die \
-                "Cargo.toml must contain exactly one version assignment in its [package] section"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^[[:space:]]*$$package$$[[:space:]]*$ ]]; then
+            in_package=1
+            package_sections=$((package_sections + 1))
+            printf '%s\n' "$line" >> "$temporary"
+            continue
         fi
 
-        die "failed to process Cargo.toml with awk"
+        if [[ "$line" =~ ^[[:space:]]*$$.*$$[[:space:]]*$ ]]; then
+            in_package=0
+        fi
+
+        if ((in_package)) &&
+            [[ "$line" =~ ^[[:space:]]*version[[:space:]]*= ]]; then
+            printf 'version = "%s"\n' "$new_version" >> "$temporary"
+            changed=$((changed + 1))
+        else
+            printf '%s\n' "$line" >> "$temporary"
+        fi
+    done < Cargo.toml
+
+    if ((package_sections != 1)); then
+        rm -f "$temporary"
+        die \
+            "Cargo.toml must contain exactly one [package] section; found $package_sections"
     fi
 
+    if ((changed != 1)); then
+        rm -f "$temporary"
+        die \
+            "Cargo.toml [package] section must contain exactly one version assignment; found $changed"
+    fi
+
+    # Writing through the original path preserves Cargo.toml's permissions.
     cat "$temporary" > Cargo.toml
     rm -f "$temporary"
 
-    grep -Fqx \
-        "version = \"$new_version\"" \
-        Cargo.toml ||
-        die "Cargo.toml version update did not produce the expected value"
+    local actual_version
+    actual_version=$(
+        cargo metadata \
+            --no-deps \
+            --format-version 1 |
+        python3 -c '
+import json
+import sys
+
+metadata = json.load(sys.stdin)
+packages = metadata["packages"]
+
+if len(packages) != 1:
+    raise SystemExit(
+        f"expected one workspace package, found {len(packages)}"
+    )
+
+print(packages[0]["version"])
+'
+    )
+
+    [[ "$actual_version" == "$new_version" ]] ||
+        die \
+            "expected Cargo package version '$new_version', but Cargo read '$actual_version'"
 }
 
 update_lock_file() {
