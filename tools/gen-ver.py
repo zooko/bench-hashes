@@ -49,7 +49,9 @@ def run(command, capture_output=False, check=True):
         )
 
     if capture_output:
-        return result.stdout.strip()
+       # Preserve leading spaces because Git porcelain status uses them
+       # as meaningful index/worktree status columns.
+       return result.stdout.rstrip("\r\n")
 
     return ""
 
@@ -376,6 +378,7 @@ def refresh_lock_file_and_verify(
             "cargo",
             "metadata",
             "--offline",
+            "--no-deps",
             "--format-version",
             "1",
         ],
