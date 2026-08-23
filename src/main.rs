@@ -127,23 +127,6 @@ struct MachineMetadata {
     os_type: String,
 }
 
-#[derive(Clone, Copy)]
-enum StatisticSeries {
-    Minimum,
-    Median,
-    Maximum,
-}
-
-impl StatisticSeries {
-    fn value(self, statistics: Statistics) -> f64 {
-        match self {
-            Self::Minimum => statistics.minimum,
-            Self::Median => statistics.median,
-            Self::Maximum => statistics.maximum,
-        }
-    }
-}
-
 fn main() {
     assert_eq!(
         SAMPLE_ROUNDS % ALGORITHM_ORDERS.len(),
@@ -165,10 +148,40 @@ fn main() {
 
     print!("{text}");
 
-    fs::write("bench-hashes.svg", svg)
-        .expect("bench-hashes.svg must be writable");
+    let directory = output_directory(&machine);
 
-    println!("Graph saved to: bench-hashes.svg");
+    fs::create_dir_all(&directory).unwrap_or_else(|error| {
+        panic!(
+            "failed to create output directory {}: {error}",
+            directory.display(),
+        )
+    });
+
+    let text_path = directory.join("bench-hashes.result.txt");
+    let svg_path = directory.join("bench-hashes.graph.svg");
+
+    fs::write(&text_path, &text).unwrap_or_else(|error| {
+        panic!(
+            "failed to write {}: {error}",
+            text_path.display(),
+        )
+    });
+
+    fs::write(&svg_path, &svg).unwrap_or_else(|error| {
+        panic!(
+            "failed to write {}: {error}",
+            svg_path.display(),
+        )
+    });
+
+    println!(
+        "# Data results (text) are in \"{}\" .",
+        text_path.display(),
+    );
+    println!(
+        "# Graph results (SVG) are in \"{}\" .",
+        svg_path.display(),
+    );
 }
 
 fn measure_all() -> Results {
@@ -739,17 +752,114 @@ fn civil_date_from_unix_days(unix_days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+fn x_fraction(bytes: usize) -> f64 {
+    let smallest = (INPUT_SIZES[0].bytes as f64).log2();
+    let largest =
+        (INPUT_SIZES[INPUT_COUNT - 1].bytes as f64).log2();
+
+    ((bytes as f64).log2() - smallest) / (largest - smallest)
+}
+
+fn gigabytes_per_second(ns_per_byte: f64) -> String {
+    assert!(ns_per_byte > 0.0);
+
+    let throughput = 1.0 / ns_per_byte;
+
+    if throughput >= 10.0 {
+        format!("{throughput:.0} GB/s")
+    } else {
+        format!("{throughput:.1} GB/s")
+    }
+}
+
+fn generate_takeaway(results: &Results) -> String {
+    let winner_at = |size_index: usize| {
+        (0..ALGORITHM_COUNT)
+            .min_by(|&a, &b| {
+                results[size_index][a]
+                    .median
+                    .total_cmp(&results[size_index][b].median)
+            })
+            .expect("there is at least one algorithm")
+    };
+
+    let first_winner = winner_at(0);
+
+    let uniform = (0..INPUT_COUNT)
+        .all(|size_index| winner_at(size_index) == first_winner);
+
+    if uniform {
+        let mut largest_ratio = 1.0_f64;
+        let mut against = first_winner;
+
+        for size_index in 0..INPUT_COUNT {
+            for algorithm_index in 0..ALGORITHM_COUNT {
+                if algorithm_index == first_winner {
+                    continue;
+                }
+
+                let ratio = results[size_index][algorithm_index].median
+                    / results[size_index][first_winner].median;
+
+                if ratio > largest_ratio {
+                    largest_ratio = ratio;
+                    against = algorithm_index;
+                }
+            }
+        }
+
+        format!(
+            "{} is fastest at every tested size on this machine — up to {:.1}× faster than {}",
+            ALGORITHMS[first_winner].name(),
+            largest_ratio,
+            ALGORITHMS[against].name(),
+        )
+    } else {
+        let last_winner = winner_at(INPUT_COUNT - 1);
+
+        format!(
+            "{} is fastest at {}; {} is fastest at {}",
+            ALGORITHMS[first_winner].name(),
+            INPUT_SIZES[0].label,
+            ALGORITHMS[last_winner].name(),
+            INPUT_SIZES[INPUT_COUNT - 1].label,
+        )
+    }
+}
+
+fn sanitize_alphanumeric(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+
+    assert!(
+        !sanitized.is_empty(),
+        "sanitized identifier must not be empty; input was {input:?}"
+    );
+
+    sanitized
+}
+
+fn output_directory(machine: &MachineMetadata) -> std::path::PathBuf {
+    let cpu = sanitize_alphanumeric(&machine.cpu_type);
+    let os = sanitize_alphanumeric(&machine.os_type);
+
+    std::path::PathBuf::from("benchmark-results")
+        .join(format!("{cpu}.{os}"))
+}
+
 fn generate_svg(
     results: &Results,
     machine: &MachineMetadata,
 ) -> String {
     const WIDTH: f64 = 1200.0;
-    const HEIGHT: f64 = 790.0;
-    const PLOT_LEFT: f64 = 105.0;
-    const PLOT_RIGHT: f64 = 1125.0;
-    const PLOT_TOP: f64 = 105.0;
-    const PLOT_BOTTOM: f64 = 515.0;
-    const TICK_COUNT: usize = 6;
+    const HEIGHT: f64 = 900.0;
+    const PLOT_LEFT: f64 = 110.0;
+    const PLOT_RIGHT: f64 = 1000.0;
+    const PLOT_TOP: f64 = 135.0;
+    const PLOT_BOTTOM: f64 = 560.0;
+    const MAX_TICK_INTERVALS: usize = 6;
 
     let observed_max = results
         .iter()
@@ -763,337 +873,383 @@ fn generate_svg(
     );
 
     /*
-     * Choose five intervals sufficient to contain the data, then reserve one
-     * additional interval above it for labels and visual headroom.
+     * Fit the axis to the data: pick a pleasant tick step, then use only as
+     * many whole intervals as the data (plus 5% headroom) actually needs.
      */
     let tick_step = nice_tick_step(
-        observed_max / (TICK_COUNT - 1) as f64,
+        observed_max * 1.05 / MAX_TICK_INTERVALS as f64,
     );
 
-    let axis_max = tick_step * TICK_COUNT as f64;
+    let tick_intervals =
+        (observed_max * 1.05 / tick_step).ceil() as usize;
+
+    let axis_max = tick_step * tick_intervals as f64;
 
     let map_y = |value: f64| {
-        PLOT_BOTTOM
-            - value / axis_max * (PLOT_BOTTOM - PLOT_TOP)
+        PLOT_BOTTOM - value / axis_max * (PLOT_BOTTOM - PLOT_TOP)
     };
 
-    let plot_width = PLOT_RIGHT - PLOT_LEFT;
-
+    /*
+     * Position input sizes by log2 of their byte counts, so horizontal
+     * distance honestly reflects multiplicative size differences.
+     */
     let x_positions: [f64; INPUT_COUNT] =
         std::array::from_fn(|index| {
             PLOT_LEFT
-                + plot_width * index as f64
-                / (INPUT_COUNT - 1) as f64
+                + x_fraction(INPUT_SIZES[index].bytes)
+                    * (PLOT_RIGHT - PLOT_LEFT)
         });
+
+    let implementation = detect_blake3_implementation();
+    let takeaway = generate_takeaway(results);
 
     let mut svg = String::new();
 
-    writeln!(
-        svg,
-        r#"<?xml version="1.0" encoding="UTF-8"?>"#
-    )
+    writeln!(svg, r##"<?xml version="1.0" encoding="UTF-8"?>"##)
         .unwrap();
 
     writeln!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH:.0} {HEIGHT:.0}" width="{WIDTH:.0}" height="{HEIGHT:.0}">"#
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH:.0} {HEIGHT:.0}" width="{WIDTH:.0}" height="{HEIGHT:.0}">"##
     )
-        .unwrap();
+    .unwrap();
 
     writeln!(
         svg,
-        r#"  <rect width="{WIDTH:.0}" height="{HEIGHT:.0}" fill="white"/>"#
+        r##"  <rect width="{WIDTH:.0}" height="{HEIGHT:.0}" fill="#fdfdfc"/>"##
     )
-        .unwrap();
+    .unwrap();
 
     svg.push_str(
-        r#"  <style>
-    .title { font-family: sans-serif; font-size: 20px; font-weight: bold; fill: #2d2d2d; }
-    .subtitle { font-family: sans-serif; font-size: 12px; fill: #666666; }
-    .axis-label { font-family: sans-serif; font-size: 12px; fill: #555555; }
-    .tick-label { font-family: sans-serif; font-size: 10px; fill: #555555; }
-    .size-label { font-family: sans-serif; font-size: 12px; font-weight: bold; fill: #333333; }
-    .legend-label { font-family: sans-serif; font-size: 11px; fill: #333333; }
-    .value-label { font-family: sans-serif; font-size: 9px; font-weight: bold; }
-    .grid { stroke: #dddddd; stroke-width: 1; }
-    .vertical-grid { stroke: #eeeeee; stroke-width: 1; }
-    .axis { stroke: #444444; stroke-width: 1; }
-    .metadata { font-family: sans-serif; font-size: 8px; font-style: italic; fill: #999999; }
+        r##"  <style>
+    text { font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    .title { font-size: 22px; font-weight: 700; fill: #1a1a1a; }
+    .takeaway { font-size: 14px; font-weight: 600; fill: #3a3a3a; }
+    .method { font-size: 11px; fill: #8a8a8a; }
+    .axis-title { font-size: 12px; fill: #666666; }
+    .tick-label { font-size: 11px; fill: #777777; }
+    .size-label { font-size: 13px; font-weight: 600; fill: #333333; }
+    .size-sublabel { font-size: 10px; fill: #999999; }
+    .value-label { font-size: 10px; font-weight: 700; }
+    .series-name { font-size: 13px; font-weight: 700; }
+    .series-detail { font-size: 10px; fill: #777777; }
+    .annotation { font-size: 10px; font-style: italic; fill: #8a8a8a; }
+    .prov-head { font-size: 10px; font-weight: 700; fill: #aaaaaa; letter-spacing: 0.1em; }
+    .prov { font-size: 9px; fill: #9a9a9a; }
+    .grid { stroke: #e8e8e6; stroke-width: 1; }
+    .grid-x { stroke: #f0f0ee; stroke-width: 1; }
+    .axis { stroke: #55555a; stroke-width: 1; }
+    .divider { stroke: #e0e0de; stroke-width: 1; }
   </style>
-"#,
+"##,
     );
 
     writeln!(
         svg,
-        r#"  <text x="600" y="30" class="title" text-anchor="middle">Cryptographic Hash Time per Byte</text>"#
+        r##"  <text x="{PLOT_LEFT:.0}" y="44" class="title">Cryptographic Hash Time per Byte</text>"##
     )
-        .unwrap();
+    .unwrap();
 
     writeln!(
         svg,
-        r#"  <text x="600" y="50" class="subtitle" text-anchor="middle">Solid: median · long dash: minimum · short dash: maximum · lower is better · linear scale</text>"#
+        r##"  <text x="{PLOT_LEFT:.0}" y="70" class="takeaway">{}</text>"##,
+        xml_escape(&takeaway),
     )
-        .unwrap();
+    .unwrap();
 
     writeln!(
         svg,
-        r#"  <text x="25" y="310" class="axis-label" text-anchor="middle" transform="rotate(-90 25 310)">Nanoseconds per byte</text>"#
+        r##"  <text x="{PLOT_LEFT:.0}" y="90" class="method">Line and dot: median · shaded band: minimum–maximum across {SAMPLE_ROUNDS} interleaved samples · single-threaded · lower is better</text>"##
     )
-        .unwrap();
+    .unwrap();
 
-    for tick_index in 0..=TICK_COUNT {
+    /* Horizontal grid and y-axis tick labels. */
+    for tick_index in 0..=tick_intervals {
         let value = tick_step * tick_index as f64;
-
         let y = map_y(value);
 
         writeln!(
             svg,
-            r#"  <line x1="{PLOT_LEFT:.1}" y1="{y:.2}" x2="{PLOT_RIGHT:.1}" y2="{y:.2}" class="grid"/>"#
+            r##"  <line x1="{PLOT_LEFT:.1}" y1="{y:.2}" x2="{PLOT_RIGHT:.1}" y2="{y:.2}" class="grid"/>"##
         )
-            .unwrap();
+        .unwrap();
 
         writeln!(
             svg,
-            r#"  <text x="94" y="{:.2}" class="tick-label" text-anchor="end">{}</text>"#,
+            r##"  <text x="{:.1}" y="{:.2}" class="tick-label" text-anchor="end">{}</text>"##,
+            PLOT_LEFT - 10.0,
             y + 3.5,
             format_linear_tick(value),
         )
-            .unwrap();
+        .unwrap();
     }
 
+    writeln!(
+        svg,
+        r##"  <text x="30" y="{:.1}" class="axis-title" text-anchor="middle" transform="rotate(-90 30 {:.1})">Nanoseconds per byte</text>"##,
+        (PLOT_TOP + PLOT_BOTTOM) / 2.0,
+        (PLOT_TOP + PLOT_BOTTOM) / 2.0,
+    )
+    .unwrap();
+
+    /* Vertical guides and x-axis labels at each tested size. */
     for size_index in 0..INPUT_COUNT {
         let x = x_positions[size_index];
 
         writeln!(
             svg,
-            r#"  <line x1="{x:.2}" y1="{PLOT_TOP:.1}" x2="{x:.2}" y2="{PLOT_BOTTOM:.1}" class="vertical-grid"/>"#
+            r##"  <line x1="{x:.2}" y1="{PLOT_TOP:.1}" x2="{x:.2}" y2="{PLOT_BOTTOM:.1}" class="grid-x"/>"##
         )
-            .unwrap();
+        .unwrap();
 
         writeln!(
             svg,
-            r#"  <text x="{x:.2}" y="540" class="size-label" text-anchor="middle">{}</text>"#,
+            r##"  <text x="{x:.2}" y="{:.1}" class="size-label" text-anchor="middle">{}</text>"##,
+            PLOT_BOTTOM + 24.0,
             xml_escape(INPUT_SIZES[size_index].label),
         )
-            .unwrap();
+        .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <text x="{x:.2}" y="{:.1}" class="size-sublabel" text-anchor="middle">{} bytes</text>"##,
+            PLOT_BOTTOM + 38.0,
+            INPUT_SIZES[size_index].bytes,
+        )
+        .unwrap();
     }
 
     writeln!(
         svg,
-        r#"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_TOP:.1}" x2="{PLOT_LEFT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"#
+        r##"  <text x="{:.1}" y="{:.1}" class="axis-title" text-anchor="middle">Input size (logarithmic spacing)</text>"##,
+        (PLOT_LEFT + PLOT_RIGHT) / 2.0,
+        PLOT_BOTTOM + 60.0,
     )
-        .unwrap();
+    .unwrap();
 
     writeln!(
         svg,
-        r#"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_BOTTOM:.1}" x2="{PLOT_RIGHT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"#
+        r##"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_TOP:.1}" x2="{PLOT_LEFT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"##
     )
-        .unwrap();
+    .unwrap();
+
+    writeln!(
+        svg,
+        r##"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_BOTTOM:.1}" x2="{PLOT_RIGHT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"##
+    )
+    .unwrap();
 
     /*
-     * Draw the connected minimum, maximum, and median series. All algorithms
-     * use the same x coordinate for a given input size.
+     * Min–max bands: forward along the maximum, back along the minimum.
+     * Drawn first so lines and dots sit on top.
      */
     for algorithm_index in 0..ALGORITHM_COUNT {
         let algorithm = ALGORITHMS[algorithm_index];
+        let mut band = String::new();
 
-        for (series, width, dash, opacity) in [
-            (
-                StatisticSeries::Minimum,
-                1.5,
-                "7,5",
-                0.50,
-            ),
-            (
-                StatisticSeries::Maximum,
-                1.5,
-                "2,4",
-                0.50,
-            ),
-            (
-                StatisticSeries::Median,
-                3.0,
-                "",
-                0.88,
-            ),
-        ] {
-            let mut path = String::new();
+        for size_index in 0..INPUT_COUNT {
+            let x = x_positions[size_index];
+            let y = map_y(results[size_index][algorithm_index].maximum);
 
-            for size_index in 0..INPUT_COUNT {
-                let x = x_positions[size_index];
-
-                let value =
-                    series.value(results[size_index][algorithm_index]);
-
-                let y = map_y(value);
-
-                if size_index == 0 {
-                    write!(path, "M {x:.2} {y:.2}").unwrap();
-                } else {
-                    write!(path, " L {x:.2} {y:.2}").unwrap();
-                }
-            }
-
-            let dash_attribute = if dash.is_empty() {
-                String::new()
+            if size_index == 0 {
+                write!(band, "M {x:.2} {y:.2}").unwrap();
             } else {
-                format!(r#" stroke-dasharray="{dash}""#)
-            };
-
-            writeln!(
-                svg,
-                r#"  <path d="{path}" fill="none" stroke="{}" stroke-width="{width:.1}"{dash_attribute} stroke-linejoin="round" stroke-linecap="round" opacity="{opacity:.2}"/>"#,
-                algorithm.color(),
-            )
-                .unwrap();
+                write!(band, " L {x:.2} {y:.2}").unwrap();
+            }
         }
+
+        for size_index in (0..INPUT_COUNT).rev() {
+            let x = x_positions[size_index];
+            let y = map_y(results[size_index][algorithm_index].minimum);
+
+            write!(band, " L {x:.2} {y:.2}").unwrap();
+        }
+
+        band.push_str(" Z");
+
+        writeln!(
+            svg,
+            r##"  <path d="{band}" fill="{}" fill-opacity="0.16" stroke="none"/>"##,
+            algorithm.color(),
+        )
+        .unwrap();
     }
 
-    /*
-     * Draw ranges and median dots over the connecting lines.
-     */
+    /* Median lines. */
     for algorithm_index in 0..ALGORITHM_COUNT {
         let algorithm = ALGORITHMS[algorithm_index];
+        let mut path = String::new();
+
+        for size_index in 0..INPUT_COUNT {
+            let x = x_positions[size_index];
+            let y = map_y(results[size_index][algorithm_index].median);
+
+            if size_index == 0 {
+                write!(path, "M {x:.2} {y:.2}").unwrap();
+            } else {
+                write!(path, " L {x:.2} {y:.2}").unwrap();
+            }
+        }
+
+        writeln!(
+            svg,
+            r##"  <path d="{path}" fill="none" stroke="{}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>"##,
+            algorithm.color(),
+        )
+        .unwrap();
+    }
+
+    /* Median dots, hover tooltips, and value labels. */
+    for algorithm_index in 0..ALGORITHM_COUNT {
+        let algorithm = ALGORITHMS[algorithm_index];
+
+        /*
+         * Stagger labels vertically per algorithm so nearly-coincident
+         * series (BLAKE3 and SHA-256 here) never collide.
+         */
+        let label_offset = match algorithm_index {
+            1 => 20.0,
+            _ => -12.0,
+        };
 
         for size_index in 0..INPUT_COUNT {
             let x = x_positions[size_index];
             let statistics = results[size_index][algorithm_index];
-
-            let minimum_y = map_y(statistics.minimum);
             let median_y = map_y(statistics.median);
-            let maximum_y = map_y(statistics.maximum);
 
             writeln!(
                 svg,
-                r#"  <line x1="{x:.2}" y1="{maximum_y:.2}" x2="{x:.2}" y2="{minimum_y:.2}" stroke="{}" stroke-width="4" stroke-linecap="round" opacity="0.25"/>"#,
+                r##"  <circle cx="{x:.2}" cy="{median_y:.2}" r="5" fill="{}" stroke="#fdfdfc" stroke-width="1.5">"##,
                 algorithm.color(),
             )
-                .unwrap();
-
-            for y in [minimum_y, maximum_y] {
-                writeln!(
-                    svg,
-                    r#"  <line x1="{:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" stroke="{}" stroke-width="2"/>"#,
-                    x - 7.0,
-                    x + 7.0,
-                    algorithm.color(),
-                )
-                    .unwrap();
-            }
+            .unwrap();
 
             writeln!(
                 svg,
-                r#"  <circle cx="{x:.2}" cy="{median_y:.2}" r="6" fill="{}" stroke="white" stroke-width="1.5">"#,
-                algorithm.color(),
-            )
-                .unwrap();
-
-            writeln!(
-                svg,
-                r#"    <title>{}, {}: median {} ns/B; minimum {} ns/B; maximum {} ns/B</title>"#,
+                r##"    <title>{}, {}: median {} ns/B ({}); range {}–{} ns/B</title>"##,
                 xml_escape(INPUT_SIZES[size_index].label),
                 xml_escape(algorithm.name()),
                 format_result_value(statistics.median),
+                gigabytes_per_second(statistics.median),
                 format_result_value(statistics.minimum),
                 format_result_value(statistics.maximum),
             )
-                .unwrap();
+            .unwrap();
 
             svg.push_str("  </circle>\n");
 
-            let label_x = match algorithm_index {
-                0 => x - 10.0,
-                1 => x + 10.0,
-                2 => x + 10.0,
-                _ => unreachable!(),
-            };
-
-            let anchor = if algorithm_index == 0 {
-                "end"
-            } else {
-                "start"
-            };
-
             writeln!(
                 svg,
-                r#"  <text x="{label_x:.2}" y="{:.2}" class="value-label" fill="{}" text-anchor="{anchor}">{}</text>"#,
-                median_y - 8.0,
+                r##"  <text x="{x:.2}" y="{:.2}" class="value-label" fill="{}" text-anchor="middle">{}</text>"##,
+                median_y + label_offset,
                 algorithm.color(),
                 format_result_value(statistics.median),
             )
-                .unwrap();
+            .unwrap();
         }
     }
 
-    let legend_start_x = 365.0;
+    /*
+     * Direct series labels at the right edge, replacing the legend. Stack
+     * them apart when medians nearly coincide.
+     */
+    let mut label_slots: Vec<(usize, f64)> = (0..ALGORITHM_COUNT)
+        .map(|algorithm_index| {
+            (
+                algorithm_index,
+                map_y(
+                    results[INPUT_COUNT - 1][algorithm_index].median,
+                ),
+            )
+        })
+        .collect();
 
-    for (index, algorithm) in ALGORITHMS.iter().enumerate() {
-        let x = legend_start_x + index as f64 * 180.0;
+    label_slots.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-        writeln!(
-            svg,
-            r#"  <line x1="{x:.1}" y1="76" x2="{:.1}" y2="76" stroke="{}" stroke-width="3"/>"#,
-            x + 26.0,
-            algorithm.color(),
-        )
-            .unwrap();
+    for index in 1..label_slots.len() {
+        let minimum_y = label_slots[index - 1].1 + 36.0;
 
-        writeln!(
-            svg,
-            r#"  <circle cx="{:.1}" cy="76" r="5" fill="{}" stroke="white" stroke-width="1"/>"#,
-            x + 13.0,
-            algorithm.color(),
-        )
-            .unwrap();
-
-        writeln!(
-            svg,
-            r#"  <text x="{:.1}" y="80" class="legend-label">{}</text>"#,
-            x + 34.0,
-            xml_escape(algorithm.name()),
-        )
-            .unwrap();
+        if label_slots[index].1 < minimum_y {
+            label_slots[index].1 = minimum_y;
+        }
     }
 
-    let implementation = detect_blake3_implementation();
+    for (algorithm_index, label_y) in label_slots {
+        let algorithm = ALGORITHMS[algorithm_index];
+        let statistics = results[INPUT_COUNT - 1][algorithm_index];
+        let label_x = PLOT_RIGHT + 14.0;
 
-    let metadata = [
-        format!(
-            "Timestamp: {} · BLAKE3 1 MiB backend: {}",
-            machine.timestamp,
-            blake3_backend_for_input(
-                implementation,
-                1024 * 1024,
+        writeln!(
+            svg,
+            r##"  <text x="{label_x:.1}" y="{:.2}" class="series-name" fill="{}">{}</text>"##,
+            label_y + 4.0,
+            algorithm.color(),
+            xml_escape(algorithm.name()),
+        )
+        .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <text x="{label_x:.1}" y="{:.2}" class="series-detail">{} ns/B · {} at 1 MiB</text>"##,
+            label_y + 18.0,
+            format_result_value(statistics.median),
+            gigabytes_per_second(statistics.median),
+        )
+        .unwrap();
+    }
+
+    /*
+     * Annotate the BLAKE3 single-chunk elbow: the 64 B point uses a
+     * different code path than the bulk sizes, and that is the whole story
+     * of its shape.
+     */
+    {
+        let blake3_index = 0;
+        let x = x_positions[0];
+        let y = map_y(results[0][blake3_index].median);
+
+        let short_backend = implementation
+            .one_chunk
+            .split(" (")
+            .next()
+            .expect("backend description is not empty");
+
+        writeln!(
+            svg,
+            r##"  <line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#bbbbbb" stroke-width="1"/>"##,
+            x + 8.0,
+            y - 8.0,
+            x + 42.0,
+            y - 34.0,
+        )
+        .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <text x="{:.2}" y="{:.2}" class="annotation">BLAKE3: 64 B fits one chunk → {}</text>"##,
+            x + 46.0,
+            y - 38.0,
+            xml_escape(short_backend),
+        )
+        .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <text x="{:.2}" y="{:.2}" class="annotation">(bulk sizes use {})</text>"##,
+            x + 46.0,
+            y - 26.0,
+            xml_escape(
+                implementation
+                    .bulk
+                    .split(" (")
+                    .next()
+                    .expect("backend description is not empty"),
             ),
-        ),
-        format!("Git source: {GIT_SOURCE}"),
-        format!("Git commit: {GIT_COMMIT} · Tag: {GIT_TAG}"),
-        format!(
-            "Git clean status: {GIT_CLEAN_STATUS} · bench-hashes: {BENCH_VERSION}"
-        ),
-        format!(
-            "CPU: {} · CPU count: {} · OS: {}",
-            machine.cpu_type,
-            machine.cpu_count,
-            machine.os_type,
-        ),
-        format!(
-            "Rust: {RUSTC_VERSION} · Target: {BUILD_TARGET}"
-        ),
-        format!(
-            "Sources: {} · {} · {}",
-            package_name_and_version(BLAKE3_SOURCE_INFO),
-            package_name_and_version(SHA2_SOURCE_INFO),
-            package_name_and_version(SHA3_SOURCE_INFO),
-        ),
-        format!(
-            "Acceleration sources: {} · {} · {}",
-            package_name_and_version(SHA2_ASM_SOURCE_INFO),
-            package_name_and_version(KECCAK_SOURCE_INFO),
-            package_name_and_version(KECCAK_ASM_SOURCE_INFO),
-        ),
-    ];
+        )
+        .unwrap();
+    }
 
+    /* Machine-readable provenance, complete and untruncated. */
     writeln!(svg, "  <metadata>").unwrap();
 
     for (name, value) in [
@@ -1121,20 +1277,71 @@ fn generate_svg(
             xml_escape(name),
             xml_escape(value),
         )
-            .unwrap();
+        .unwrap();
     }
 
     writeln!(svg, "  </metadata>").unwrap();
 
-    for (index, line) in metadata.iter().enumerate() {
-        let y = 575.0 + index as f64 * 16.0;
+    /* Human-readable provenance: left-aligned, compact, de-emphasized. */
+    let provenance_top = PLOT_BOTTOM + 92.0;
 
+    writeln!(
+        svg,
+        r##"  <line x1="{PLOT_LEFT:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" class="divider"/>"##,
+        provenance_top,
+        WIDTH - PLOT_LEFT,
+        provenance_top,
+    )
+    .unwrap();
+
+    writeln!(
+        svg,
+        r##"  <text x="{PLOT_LEFT:.1}" y="{:.1}" class="prov-head">PROVENANCE</text>"##,
+        provenance_top + 20.0,
+    )
+    .unwrap();
+
+    let provenance_lines = [
+        format!(
+            "Run: {} · bench-hashes {BENCH_VERSION}",
+            machine.timestamp,
+        ),
+        format!(
+            "Machine: {} · {} logical CPUs · {}",
+            machine.cpu_type, machine.cpu_count, machine.os_type,
+        ),
+        format!(
+            "Toolchain: {RUSTC_VERSION} · {BUILD_TARGET}"
+        ),
+        format!(
+            "Source: {GIT_SOURCE} @ {GIT_COMMIT}"
+        ),
+        format!(
+            "Tag: {GIT_TAG} · Working tree: {GIT_CLEAN_STATUS}"
+        ),
+        format!(
+            "Crates: {} · {} (+{}) · {} (+{}, {})",
+            package_name_and_version(BLAKE3_SOURCE_INFO),
+            package_name_and_version(SHA2_SOURCE_INFO),
+            package_name_and_version(SHA2_ASM_SOURCE_INFO),
+            package_name_and_version(SHA3_SOURCE_INFO),
+            package_name_and_version(KECCAK_SOURCE_INFO),
+            package_name_and_version(KECCAK_ASM_SOURCE_INFO),
+        ),
+        format!(
+            "BLAKE3: single-threaded, Rayon not enabled · platform {} · full crate checksums embedded in this file's metadata element",
+            implementation.platform,
+        ),
+    ];
+
+    for (index, line) in provenance_lines.iter().enumerate() {
         writeln!(
             svg,
-            r#"  <text x="600" y="{y:.1}" class="metadata" text-anchor="middle">{}</text>"#,
+            r##"  <text x="{PLOT_LEFT:.1}" y="{:.1}" class="prov">{}</text>"##,
+            provenance_top + 40.0 + index as f64 * 15.0,
             xml_escape(line),
         )
-            .unwrap();
+        .unwrap();
     }
 
     svg.push_str("</svg>\n");

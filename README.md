@@ -27,10 +27,13 @@ It reports:
 cargo run --release
 ```
 
-The program prints its results to stdout and writes a graphical results file named
+## Output layout
+
+Results are written to a machine-specific subdirectory:
 
 ```text
-bench-hashes.svg
+benchmark-results/{CPU}.{OS}/bench-hashes.result.txt
+benchmark-results/{CPU}.{OS}/bench-hashes.graph.svg
 ```
 
 ## BLAKE3 threading
