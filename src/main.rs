@@ -161,17 +161,11 @@ fn main() {
     let svg_path = directory.join("bench-hashes.graph.svg");
 
     fs::write(&text_path, &text).unwrap_or_else(|error| {
-        panic!(
-            "failed to write {}: {error}",
-            text_path.display(),
-        )
+        panic!("failed to write {}: {error}", text_path.display())
     });
 
     fs::write(&svg_path, &svg).unwrap_or_else(|error| {
-        panic!(
-            "failed to write {}: {error}",
-            svg_path.display(),
-        )
+        panic!("failed to write {}: {error}", svg_path.display())
     });
 
     println!(
@@ -859,7 +853,6 @@ fn generate_svg(
     const PLOT_RIGHT: f64 = 1000.0;
     const PLOT_TOP: f64 = 135.0;
     const PLOT_BOTTOM: f64 = 560.0;
-    const MAX_TICK_INTERVALS: usize = 6;
 
     let observed_max = results
         .iter()
@@ -872,32 +865,39 @@ fn generate_svg(
         "graph maximum must be finite and positive"
     );
 
-    /*
-     * Fit the axis to the data: pick a pleasant tick step, then use only as
-     * many whole intervals as the data (plus 5% headroom) actually needs.
-     */
-    let tick_step = nice_tick_step(
-        observed_max * 1.05 / MAX_TICK_INTERVALS as f64,
+    let observed_min = results
+        .iter()
+        .flatten()
+        .map(|statistics| statistics.minimum)
+        .fold(f64::INFINITY, f64::min);
+
+    assert!(
+        observed_min.is_finite() && observed_min > 0.0,
+        "log axis requires positive measurements"
     );
 
-    let tick_intervals =
-        (observed_max * 1.05 / tick_step).ceil() as usize;
+    let axis_min = nice_log_bound_below(observed_min * 0.92);
+    let axis_max = nice_log_bound_above(observed_max * 1.08);
 
-    let axis_max = tick_step * tick_intervals as f64;
+    let log_min = axis_min.ln();
+    let log_max = axis_max.ln();
 
     let map_y = |value: f64| {
-        PLOT_BOTTOM - value / axis_max * (PLOT_BOTTOM - PLOT_TOP)
+        assert!(value > 0.0);
+
+        PLOT_BOTTOM
+            - (value.ln() - log_min) / (log_max - log_min)
+            * (PLOT_BOTTOM - PLOT_TOP)
     };
 
-    /*
-     * Position input sizes by log2 of their byte counts, so horizontal
-     * distance honestly reflects multiplicative size differences.
-     */
+    const X_INSET: f64 = 40.0;
+
     let x_positions: [f64; INPUT_COUNT] =
         std::array::from_fn(|index| {
             PLOT_LEFT
+                + X_INSET
                 + x_fraction(INPUT_SIZES[index].bytes)
-                    * (PLOT_RIGHT - PLOT_LEFT)
+                * (PLOT_RIGHT - PLOT_LEFT - 2.0 * X_INSET)
         });
 
     let implementation = detect_blake3_implementation();
@@ -912,13 +912,13 @@ fn generate_svg(
         svg,
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH:.0} {HEIGHT:.0}" width="{WIDTH:.0}" height="{HEIGHT:.0}">"##
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <rect width="{WIDTH:.0}" height="{HEIGHT:.0}" fill="#fdfdfc"/>"##
     )
-    .unwrap();
+        .unwrap();
 
     svg.push_str(
         r##"  <style>
@@ -948,40 +948,38 @@ fn generate_svg(
         svg,
         r##"  <text x="{PLOT_LEFT:.0}" y="44" class="title">Cryptographic Hash Time per Byte</text>"##
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <text x="{PLOT_LEFT:.0}" y="70" class="takeaway">{}</text>"##,
         xml_escape(&takeaway),
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <text x="{PLOT_LEFT:.0}" y="90" class="method">Line and dot: median · shaded band: minimum–maximum across {SAMPLE_ROUNDS} interleaved samples · single-threaded · lower is better</text>"##
     )
-    .unwrap();
+        .unwrap();
 
     /* Horizontal grid and y-axis tick labels. */
-    for tick_index in 0..=tick_intervals {
-        let value = tick_step * tick_index as f64;
+    for value in log_ticks(axis_min, axis_max) {
         let y = map_y(value);
-
         writeln!(
             svg,
             r##"  <line x1="{PLOT_LEFT:.1}" y1="{y:.2}" x2="{PLOT_RIGHT:.1}" y2="{y:.2}" class="grid"/>"##
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
             r##"  <text x="{:.1}" y="{:.2}" class="tick-label" text-anchor="end">{}</text>"##,
             PLOT_LEFT - 10.0,
             y + 3.5,
-            format_linear_tick(value),
+            format_tick(value),
         )
-        .unwrap();
+            .unwrap();
     }
 
     writeln!(
@@ -990,7 +988,7 @@ fn generate_svg(
         (PLOT_TOP + PLOT_BOTTOM) / 2.0,
         (PLOT_TOP + PLOT_BOTTOM) / 2.0,
     )
-    .unwrap();
+        .unwrap();
 
     /* Vertical guides and x-axis labels at each tested size. */
     for size_index in 0..INPUT_COUNT {
@@ -1000,7 +998,7 @@ fn generate_svg(
             svg,
             r##"  <line x1="{x:.2}" y1="{PLOT_TOP:.1}" x2="{x:.2}" y2="{PLOT_BOTTOM:.1}" class="grid-x"/>"##
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
@@ -1008,7 +1006,7 @@ fn generate_svg(
             PLOT_BOTTOM + 24.0,
             xml_escape(INPUT_SIZES[size_index].label),
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
@@ -1016,7 +1014,7 @@ fn generate_svg(
             PLOT_BOTTOM + 38.0,
             INPUT_SIZES[size_index].bytes,
         )
-        .unwrap();
+            .unwrap();
     }
 
     writeln!(
@@ -1025,19 +1023,19 @@ fn generate_svg(
         (PLOT_LEFT + PLOT_RIGHT) / 2.0,
         PLOT_BOTTOM + 60.0,
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_TOP:.1}" x2="{PLOT_LEFT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"##
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <line x1="{PLOT_LEFT:.1}" y1="{PLOT_BOTTOM:.1}" x2="{PLOT_RIGHT:.1}" y2="{PLOT_BOTTOM:.1}" class="axis"/>"##
     )
-    .unwrap();
+        .unwrap();
 
     /*
      * Min–max bands: forward along the maximum, back along the minimum.
@@ -1072,7 +1070,7 @@ fn generate_svg(
             r##"  <path d="{band}" fill="{}" fill-opacity="0.16" stroke="none"/>"##,
             algorithm.color(),
         )
-        .unwrap();
+            .unwrap();
     }
 
     /* Median lines. */
@@ -1096,7 +1094,7 @@ fn generate_svg(
             r##"  <path d="{path}" fill="none" stroke="{}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>"##,
             algorithm.color(),
         )
-        .unwrap();
+            .unwrap();
     }
 
     /* Median dots, hover tooltips, and value labels. */
@@ -1122,7 +1120,7 @@ fn generate_svg(
                 r##"  <circle cx="{x:.2}" cy="{median_y:.2}" r="5" fill="{}" stroke="#fdfdfc" stroke-width="1.5">"##,
                 algorithm.color(),
             )
-            .unwrap();
+                .unwrap();
 
             writeln!(
                 svg,
@@ -1134,18 +1132,30 @@ fn generate_svg(
                 format_result_value(statistics.minimum),
                 format_result_value(statistics.maximum),
             )
-            .unwrap();
+                .unwrap();
 
             svg.push_str("  </circle>\n");
 
+            /*
+             * Edge columns anchor inward so labels never spill into the
+             * y-axis gutter or the right-edge series labels.
+             */
+            let (label_x, anchor) = if size_index == 0 {
+                (x + 9.0, "start")
+            } else if size_index == INPUT_COUNT - 1 {
+                (x - 9.0, "end")
+            } else {
+                (x, "middle")
+            };
+
             writeln!(
                 svg,
-                r##"  <text x="{x:.2}" y="{:.2}" class="value-label" fill="{}" text-anchor="middle">{}</text>"##,
+                r##"  <text x="{label_x:.2}" y="{:.2}" class="value-label" fill="{}" text-anchor="{anchor}">{}</text>"##,
                 median_y + label_offset,
                 algorithm.color(),
                 format_result_value(statistics.median),
             )
-            .unwrap();
+                .unwrap();
         }
     }
 
@@ -1167,7 +1177,7 @@ fn generate_svg(
     label_slots.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     for index in 1..label_slots.len() {
-        let minimum_y = label_slots[index - 1].1 + 36.0;
+        let minimum_y = label_slots[index - 1].1 + 44.0;
 
         if label_slots[index].1 < minimum_y {
             label_slots[index].1 = minimum_y;
@@ -1186,7 +1196,7 @@ fn generate_svg(
             algorithm.color(),
             xml_escape(algorithm.name()),
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
@@ -1195,7 +1205,7 @@ fn generate_svg(
             format_result_value(statistics.median),
             gigabytes_per_second(statistics.median),
         )
-        .unwrap();
+            .unwrap();
     }
 
     /*
@@ -1220,24 +1230,24 @@ fn generate_svg(
             x + 8.0,
             y - 8.0,
             x + 42.0,
-            y - 34.0,
+            y - 48.0,
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
             r##"  <text x="{:.2}" y="{:.2}" class="annotation">BLAKE3: 64 B fits one chunk → {}</text>"##,
             x + 46.0,
-            y - 38.0,
+            y - 52.0,
             xml_escape(short_backend),
         )
-        .unwrap();
+            .unwrap();
 
         writeln!(
             svg,
             r##"  <text x="{:.2}" y="{:.2}" class="annotation">(bulk sizes use {})</text>"##,
             x + 46.0,
-            y - 26.0,
+            y - 40.0,
             xml_escape(
                 implementation
                     .bulk
@@ -1246,7 +1256,7 @@ fn generate_svg(
                     .expect("backend description is not empty"),
             ),
         )
-        .unwrap();
+            .unwrap();
     }
 
     /* Machine-readable provenance, complete and untruncated. */
@@ -1277,7 +1287,7 @@ fn generate_svg(
             xml_escape(name),
             xml_escape(value),
         )
-        .unwrap();
+            .unwrap();
     }
 
     writeln!(svg, "  </metadata>").unwrap();
@@ -1292,14 +1302,14 @@ fn generate_svg(
         WIDTH - PLOT_LEFT,
         provenance_top,
     )
-    .unwrap();
+        .unwrap();
 
     writeln!(
         svg,
         r##"  <text x="{PLOT_LEFT:.1}" y="{:.1}" class="prov-head">PROVENANCE</text>"##,
         provenance_top + 20.0,
     )
-    .unwrap();
+        .unwrap();
 
     let provenance_lines = [
         format!(
@@ -1341,7 +1351,7 @@ fn generate_svg(
             provenance_top + 40.0 + index as f64 * 15.0,
             xml_escape(line),
         )
-        .unwrap();
+            .unwrap();
     }
 
     svg.push_str("</svg>\n");
@@ -1355,36 +1365,79 @@ fn package_name_and_version(source_info: &str) -> &str {
         .expect("package source information must not be empty")
 }
 
-fn nice_tick_step(minimum_step: f64) -> f64 {
-    assert!(
-        minimum_step.is_finite() && minimum_step > 0.0,
-        "tick step must be finite and positive"
-    );
+fn nice_log_bound_below(value: f64) -> f64 {
+    assert!(value.is_finite() && value > 0.0);
 
-    let magnitude =
-        10.0_f64.powf(minimum_step.log10().floor());
+    let magnitude = 10.0_f64.powf(value.log10().floor());
+    let normalized = value / magnitude;
 
-    let normalized = minimum_step / magnitude;
+    let nice = if normalized >= 5.0 {
+        5.0
+    } else if normalized >= 2.0 {
+        2.0
+    } else {
+        1.0
+    };
 
-    let nice_normalized = if normalized <= 1.0 {
+    nice * magnitude
+}
+
+fn nice_log_bound_above(value: f64) -> f64 {
+    assert!(value.is_finite() && value > 0.0);
+
+    let magnitude = 10.0_f64.powf(value.log10().floor());
+    let normalized = value / magnitude;
+
+    let nice = if normalized <= 1.0 {
         1.0
     } else if normalized <= 2.0 {
         2.0
-    } else if normalized <= 4.0 {
-        4.0
     } else if normalized <= 5.0 {
         5.0
     } else {
         10.0
     };
 
-    nice_normalized * magnitude
+    nice * magnitude
 }
 
-fn format_linear_tick(value: f64) -> String {
-    if value == 0.0 {
-        "0".to_owned()
-    } else if value >= 10.0 {
+fn log_ticks(axis_min: f64, axis_max: f64) -> Vec<f64> {
+    let lowest_exponent = axis_min.log10().floor() as i32 - 1;
+    let highest_exponent = axis_max.log10().ceil() as i32 + 1;
+
+    let mut ticks = Vec::new();
+
+    for exponent in lowest_exponent..=highest_exponent {
+        for mantissa in [1.0, 2.0, 5.0] {
+            let value = mantissa * 10.0_f64.powi(exponent);
+
+            /*
+             * Tolerate one part in a million of floating-point error at
+             * the axis bounds themselves.
+             */
+            if value >= axis_min * 0.999_999
+                && value <= axis_max * 1.000_001
+            {
+                ticks.push(value);
+            }
+        }
+    }
+
+    assert!(
+        ticks.len() >= 2,
+        "a log axis must have at least two ticks"
+    );
+
+    ticks
+}
+
+fn format_tick(value: f64) -> String {
+    assert!(
+        value > 0.0,
+        "log-axis ticks must be positive"
+    );
+
+    if value >= 10.0 {
         format!("{value:.0}")
     } else if value >= 1.0 {
         format!("{value:.1}")

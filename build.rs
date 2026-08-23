@@ -119,6 +119,32 @@ fn normalize_git_source(source: &str) -> String {
     source.to_owned()
 }
 
+/*
+ * A repository can legitimately have no reachable release tags, so a
+ * describe failure is a soft result rather than a contract violation.
+ */
+fn git_text_allow_failure(
+    repository: &Path,
+    arguments: &[&str],
+) -> Option<String> {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(repository)
+        .output()
+        .expect("Git must be installed");
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(
+        String::from_utf8(output.stdout)
+            .expect("Git output must be UTF-8")
+            .trim()
+            .to_owned(),
+    )
+}
+
 fn emit_git_metadata(repository: &Path) {
     let git_directory = git_text(
         repository,
@@ -142,6 +168,14 @@ fn emit_git_metadata(repository: &Path) {
     println!(
         "cargo:rerun-if-changed={}",
         git_directory.join("index").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_directory.join("refs/tags").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_directory.join("packed-refs").display()
     );
 
     let tracked_files = git_bytes(
@@ -172,15 +206,32 @@ fn emit_git_metadata(repository: &Path) {
         &["rev-parse", "HEAD"],
     );
 
-    let tags = git_text(
+    let tags = match git_text_allow_failure(
         repository,
-        &["tag", "--points-at", "HEAD"],
-    );
+        &["describe", "--tags", "--long", "--match", "v*"],
+    ) {
+        Some(description) => {
+            /*
+             * git describe --long output has the form TAG-N-gHASH, where
+             * N is the number of commits since TAG. The tag itself may
+             * contain '+' but never '-', so splitting from the right
+             * twice is unambiguous.
+             */
+            let (rest, _short_hash) = description
+                .rsplit_once('-')
+                .expect("git describe --long output must contain '-'");
 
-    let tags = if tags.is_empty() {
-        "(none)".to_owned()
-    } else {
-        tags.lines().collect::<Vec<_>>().join(", ")
+            let (tag, commits_since) = rest
+                .rsplit_once('-')
+                .expect("git describe --long output must contain two '-'");
+
+            if commits_since == "0" {
+                tag.to_owned()
+            } else {
+                format!("{tag} (+{commits_since} commits)")
+            }
+        }
+        None => "(no reachable release tag)".to_owned(),
     };
 
     let status = git_bytes(
