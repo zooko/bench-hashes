@@ -125,29 +125,31 @@ assert_version_greater() {
 set_manifest_version() {
     local new_version=$1
     local temporary
+    local status
 
-    temporary=$(mktemp "${TMPDIR:-/tmp}/bench-hashes-Cargo.toml.XXXXXX")
+    temporary=$(
+        mktemp "${TMPDIR:-/tmp}/bench-hashes-Cargo.toml.XXXXXX"
+    )
 
-    if ! awk -v new_version="$new_version" '
+    awk -v new_version="$new_version" '
         BEGIN {
             in_package = 0
             changed = 0
         }
 
-        /^$$package$$[[:space:]]*$/ {
+        /^[[:space:]]*$$package$$[[:space:]]*$/ {
             in_package = 1
             print
             next
         }
 
-        /^$$/ {
+        /^[[:space:]]*$$/ {
             in_package = 0
         }
 
-        in_package &&
-        /^[[:space:]]*version[[:space:]]*=/ {
+        in_package && /^[[:space:]]*version[[:space:]]*=/ {
             print "version = \"" new_version "\""
-            changed += 1
+            changed++
             next
         }
 
@@ -160,14 +162,28 @@ set_manifest_version() {
                 exit 42
             }
         }
-    ' Cargo.toml > "$temporary"; then
+    ' Cargo.toml > "$temporary" || status=$?
+
+    status=${status:-0}
+
+    if [[ $status -ne 0 ]]; then
         rm -f "$temporary"
-        die "Cargo.toml must contain exactly one version in its [package] section"
+
+        if [[ $status -eq 42 ]]; then
+            die \
+                "Cargo.toml must contain exactly one version assignment in its [package] section"
+        fi
+
+        die "failed to process Cargo.toml with awk"
     fi
 
-    # Preserve Cargo.toml's existing permissions.
     cat "$temporary" > Cargo.toml
     rm -f "$temporary"
+
+    grep -Fqx \
+        "version = \"$new_version\"" \
+        Cargo.toml ||
+        die "Cargo.toml version update did not produce the expected value"
 }
 
 update_lock_file() {
