@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+  <title>Hash benchmark</title>
+  <style>
+    html {
+      color-scheme: light;
+      background: #fff;
+      color: #222;
+    }
+
+    body {
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <p style="padding:20px;font-family:system-ui,sans-serif">
+    Running benchmark…
+  </p>
+
+  <script type="module">
+    import init from "./pkg/bench_hashes.js";
+    await init();
+  </script>
+</body>
+</html>
