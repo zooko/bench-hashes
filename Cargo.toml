@@ -1,6 +1,6 @@
 [package]
 name = "bench-hashes"
-version = "0.3.0+c13d7ecb9eb4dd04c6a0e03824d0040730125dec"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
 build = "build.rs"
