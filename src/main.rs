@@ -1,5 +1,4 @@
 use sha2::{Digest, Sha256};
-use sha3::Sha3_256;
 use std::fmt::Write as _;
 use std::fs;
 use std::hint::black_box;
@@ -14,7 +13,7 @@ const CALIBRATION_PROBE_NS: u128 = 1_000_000;
 const TARGET_SAMPLE_NS: u128 = 4_000_000;
 
 const INPUT_COUNT: usize = 4;
-const ALGORITHM_COUNT: usize = 3;
+const ALGORITHM_COUNT: usize = 2;
 
 const BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SOURCE: &str = env!("BENCH_GIT_SOURCE");
@@ -29,9 +28,6 @@ const TARGET_FEATURES: &str = env!("BENCH_TARGET_FEATURES");
 const BLAKE3_SOURCE_INFO: &str = env!("BLAKE3_SOURCE_INFO");
 const SHA2_SOURCE_INFO: &str = env!("SHA2_SOURCE_INFO");
 const SHA2_ASM_SOURCE_INFO: &str = env!("SHA2_ASM_SOURCE_INFO");
-const SHA3_SOURCE_INFO: &str = env!("SHA3_SOURCE_INFO");
-const KECCAK_SOURCE_INFO: &str = env!("KECCAK_SOURCE_INFO");
-const KECCAK_ASM_SOURCE_INFO: &str = env!("KECCAK_ASM_SOURCE_INFO");
 
 const INPUT_SIZES: [InputSize; INPUT_COUNT] = [
     InputSize {
@@ -55,21 +51,15 @@ const INPUT_SIZES: [InputSize; INPUT_COUNT] = [
 const ALGORITHMS: [Algorithm; ALGORITHM_COUNT] = [
     Algorithm::Blake3,
     Algorithm::Sha256,
-    Algorithm::Sha3_256,
 ];
 
 /*
- * SAMPLE_ROUNDS is divisible by six. Therefore every permutation appears
- * equally often and every algorithm occupies every ordering position equally
- * often.
+ * SAMPLE_ROUNDS is divisible by two, so both orderings appear equally often
+ * and each algorithm runs first exactly half the time.
  */
-const ALGORITHM_ORDERS: [[usize; ALGORITHM_COUNT]; 6] = [
-    [0, 1, 2],
-    [0, 2, 1],
-    [1, 0, 2],
-    [1, 2, 0],
-    [2, 0, 1],
-    [2, 1, 0],
+const ALGORITHM_ORDERS: [[usize; ALGORITHM_COUNT]; 2] = [
+    [0, 1],
+    [1, 0],
 ];
 
 type Results = [[Statistics; ALGORITHM_COUNT]; INPUT_COUNT];
@@ -84,7 +74,6 @@ struct InputSize {
 enum Algorithm {
     Blake3,
     Sha256,
-    Sha3_256,
 }
 
 impl Algorithm {
@@ -92,7 +81,6 @@ impl Algorithm {
         match self {
             Self::Blake3 => "BLAKE3",
             Self::Sha256 => "SHA-256",
-            Self::Sha3_256 => "SHA3-256",
         }
     }
 
@@ -100,7 +88,6 @@ impl Algorithm {
         match self {
             Self::Blake3 => "#3b82f6",
             Self::Sha256 => "#e07a45",
-            Self::Sha3_256 => "#8b5cf6",
         }
     }
 }
@@ -321,12 +308,6 @@ fn run_batch(
         Algorithm::Sha256 => {
             for _ in 0..iterations {
                 let digest = Sha256::digest(black_box(input));
-                let _ = black_box(digest);
-            }
-        }
-        Algorithm::Sha3_256 => {
-            for _ in 0..iterations {
-                let digest = Sha3_256::digest(black_box(input));
                 let _ = black_box(digest);
             }
         }
@@ -575,13 +556,6 @@ fn generate_text(
         "SHA-256 assembly source: {SHA2_ASM_SOURCE_INFO}"
     )
         .unwrap();
-    writeln!(output, "SHA3-256 source: {SHA3_SOURCE_INFO}").unwrap();
-    writeln!(output, "Keccak source: {KECCAK_SOURCE_INFO}").unwrap();
-    writeln!(
-        output,
-        "Keccak assembly source: {KECCAK_ASM_SOURCE_INFO}"
-    )
-        .unwrap();
     writeln!(
         output,
         "BLAKE3 mode: single-threaded; Rayon not enabled"
@@ -766,53 +740,45 @@ fn gigabytes_per_second(ns_per_byte: f64) -> String {
     }
 }
 
+/*
+ * Ratio convention throughout: ALGORITHMS[0] median ÷ ALGORITHMS[1] median.
+ * A ratio above 1.0 means ALGORITHMS[1] is faster.
+ */
+fn median_ratios(results: &Results) -> [f64; INPUT_COUNT] {
+    std::array::from_fn(|size_index| {
+        results[size_index][0].median / results[size_index][1].median
+    })
+}
+
 fn generate_takeaway(results: &Results) -> String {
-    let winner_at = |size_index: usize| {
-        (0..ALGORITHM_COUNT)
-            .min_by(|&a, &b| {
-                results[size_index][a]
-                    .median
-                    .total_cmp(&results[size_index][b].median)
-            })
-            .expect("there is at least one algorithm")
-    };
+    let ratios = median_ratios(results);
 
-    let first_winner = winner_at(0);
+    let lowest = ratios.iter().copied().fold(f64::INFINITY, f64::min);
+    let highest = ratios.iter().copied().fold(0.0_f64, f64::max);
 
-    let uniform = (0..INPUT_COUNT)
-        .all(|size_index| winner_at(size_index) == first_winner);
-
-    if uniform {
-        let mut largest_ratio = 1.0_f64;
-        let mut against = first_winner;
-
-        for size_index in 0..INPUT_COUNT {
-            for algorithm_index in 0..ALGORITHM_COUNT {
-                if algorithm_index == first_winner {
-                    continue;
-                }
-
-                let ratio = results[size_index][algorithm_index].median
-                    / results[size_index][first_winner].median;
-
-                if ratio > largest_ratio {
-                    largest_ratio = ratio;
-                    against = algorithm_index;
-                }
-            }
-        }
-
+    if lowest > 1.0 {
         format!(
-            "{} is fastest at every tested size on this machine — up to {:.1}× faster than {}",
-            ALGORITHMS[first_winner].name(),
-            largest_ratio,
-            ALGORITHMS[against].name(),
+            "{} is faster at every tested size on this machine — {:.2}× to {:.2}× faster than {}",
+            ALGORITHMS[1].name(),
+            lowest,
+            highest,
+            ALGORITHMS[0].name(),
+        )
+    } else if highest < 1.0 {
+        format!(
+            "{} is faster at every tested size on this machine — {:.2}× to {:.2}× faster than {}",
+            ALGORITHMS[0].name(),
+            1.0 / highest,
+            1.0 / lowest,
+            ALGORITHMS[1].name(),
         )
     } else {
-        let last_winner = winner_at(INPUT_COUNT - 1);
+        let first_winner = if ratios[0] > 1.0 { 1 } else { 0 };
+        let last_winner =
+            if ratios[INPUT_COUNT - 1] > 1.0 { 1 } else { 0 };
 
         format!(
-            "{} is fastest at {}; {} is fastest at {}",
+            "{} is faster at {}; {} is faster at {} — the crossover is the story",
             ALGORITHMS[first_winner].name(),
             INPUT_SIZES[0].label,
             ALGORITHMS[last_winner].name(),
@@ -848,11 +814,18 @@ fn generate_svg(
     machine: &MachineMetadata,
 ) -> String {
     const WIDTH: f64 = 1200.0;
-    const HEIGHT: f64 = 900.0;
+    const HEIGHT: f64 = 860.0;
     const PLOT_LEFT: f64 = 110.0;
     const PLOT_RIGHT: f64 = 1000.0;
     const PLOT_TOP: f64 = 135.0;
-    const PLOT_BOTTOM: f64 = 560.0;
+    const PLOT_BOTTOM: f64 = 455.0;
+    const RATIO_TOP: f64 = 500.0;
+    const RATIO_BOTTOM: f64 = 590.0;
+
+    assert_eq!(
+        ALGORITHM_COUNT, 2,
+        "the ratio panel is defined for exactly two algorithms"
+    );
 
     let observed_max = results
         .iter()
@@ -1003,25 +976,29 @@ fn generate_svg(
         writeln!(
             svg,
             r##"  <text x="{x:.2}" y="{:.1}" class="size-label" text-anchor="middle">{}</text>"##,
-            PLOT_BOTTOM + 24.0,
+            RATIO_BOTTOM + 24.0,
             xml_escape(INPUT_SIZES[size_index].label),
         )
             .unwrap();
 
-        writeln!(
-            svg,
-            r##"  <text x="{x:.2}" y="{:.1}" class="size-sublabel" text-anchor="middle">{} bytes</text>"##,
-            PLOT_BOTTOM + 38.0,
-            INPUT_SIZES[size_index].bytes,
-        )
-            .unwrap();
+        if !INPUT_SIZES[size_index].label.starts_with(
+            &INPUT_SIZES[size_index].bytes.to_string(),
+        ) {
+            writeln!(
+                svg,
+                r##"  <text x="{x:.2}" y="{:.1}" class="size-sublabel" text-anchor="middle">{} bytes</text>"##,
+                RATIO_BOTTOM + 38.0,
+                INPUT_SIZES[size_index].bytes,
+            )
+                .unwrap();
+        }
     }
 
     writeln!(
         svg,
         r##"  <text x="{:.1}" y="{:.1}" class="axis-title" text-anchor="middle">Input size (logarithmic spacing)</text>"##,
         (PLOT_LEFT + PLOT_RIGHT) / 2.0,
-        PLOT_BOTTOM + 60.0,
+        RATIO_BOTTOM + 60.0,
     )
         .unwrap();
 
@@ -1209,6 +1186,154 @@ fn generate_svg(
     }
 
     /*
+     * Ratio panel: median of ALGORITHMS[0] divided by median of
+     * ALGORITHMS[1] at each size, on a log scale so equal ratios are
+     * equal distances. Above the dashed line, ALGORITHMS[1] is faster.
+     */
+    {
+        let ratios = median_ratios(results);
+
+        let ratio_low = ratios
+            .iter()
+            .copied()
+            .fold(1.0_f64, f64::min)
+            * 0.94;
+
+        let ratio_high = ratios
+            .iter()
+            .copied()
+            .fold(1.0_f64, f64::max)
+            * 1.06;
+
+        let ratio_log_low = ratio_low.ln();
+        let ratio_log_high = ratio_high.ln();
+
+        let map_ratio_y = |ratio: f64| {
+            assert!(ratio > 0.0);
+
+            RATIO_BOTTOM
+                - (ratio.ln() - ratio_log_low)
+                / (ratio_log_high - ratio_log_low)
+                * (RATIO_BOTTOM - RATIO_TOP)
+        };
+
+        writeln!(
+            svg,
+            r##"  <text x="{PLOT_LEFT:.1}" y="{:.1}" class="axis-title">Speed ratio: {} time ÷ {} time — above the dashed line, {} is faster</text>"##,
+            RATIO_TOP - 10.0,
+            xml_escape(ALGORITHMS[0].name()),
+            xml_escape(ALGORITHMS[1].name()),
+            xml_escape(ALGORITHMS[1].name()),
+        )
+            .unwrap();
+
+        /* Panel frame and per-size guides. */
+        writeln!(
+            svg,
+            r##"  <line x1="{PLOT_LEFT:.1}" y1="{RATIO_TOP:.1}" x2="{PLOT_LEFT:.1}" y2="{RATIO_BOTTOM:.1}" class="axis"/>"##
+        )
+            .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <line x1="{PLOT_LEFT:.1}" y1="{RATIO_BOTTOM:.1}" x2="{PLOT_RIGHT:.1}" y2="{RATIO_BOTTOM:.1}" class="axis"/>"##
+        )
+            .unwrap();
+
+        for x in x_positions {
+            writeln!(
+                svg,
+                r##"  <line x1="{x:.2}" y1="{RATIO_TOP:.1}" x2="{x:.2}" y2="{RATIO_BOTTOM:.1}" class="grid-x"/>"##
+            )
+                .unwrap();
+        }
+
+        /* Equal-speed reference line. */
+        let equal_y = map_ratio_y(1.0);
+
+        writeln!(
+            svg,
+            r##"  <line x1="{PLOT_LEFT:.1}" y1="{equal_y:.2}" x2="{PLOT_RIGHT:.1}" y2="{equal_y:.2}" stroke="#aaaaaa" stroke-width="1" stroke-dasharray="5,4"/>"##
+        )
+            .unwrap();
+
+        writeln!(
+            svg,
+            r##"  <text x="{:.1}" y="{:.2}" class="tick-label" text-anchor="end">1.0×</text>"##,
+            PLOT_LEFT - 10.0,
+            equal_y + 3.5,
+        )
+            .unwrap();
+
+        /* Connect the ratios, then dot and label each one. */
+        let mut path = String::new();
+
+        for size_index in 0..INPUT_COUNT {
+            let x = x_positions[size_index];
+            let y = map_ratio_y(ratios[size_index]);
+
+            if size_index == 0 {
+                write!(path, "M {x:.2} {y:.2}").unwrap();
+            } else {
+                write!(path, " L {x:.2} {y:.2}").unwrap();
+            }
+        }
+
+        writeln!(
+            svg,
+            r##"  <path d="{path}" fill="none" stroke="#888888" stroke-width="1.5" stroke-linejoin="round"/>"##
+        )
+            .unwrap();
+
+        for size_index in 0..INPUT_COUNT {
+            let x = x_positions[size_index];
+            let ratio = ratios[size_index];
+            let y = map_ratio_y(ratio);
+
+            /* Color each dot by whichever algorithm wins at that size. */
+            let winner = if ratio > 1.0 {
+                ALGORITHMS[1]
+            } else {
+                ALGORITHMS[0]
+            };
+
+            writeln!(
+                svg,
+                r##"  <circle cx="{x:.2}" cy="{y:.2}" r="4.5" fill="{}" stroke="#fdfdfc" stroke-width="1.5"/>"##,
+                winner.color(),
+            )
+                .unwrap();
+
+            let (label_x, anchor) = if size_index == 0 {
+                (x + 8.0, "start")
+            } else if size_index == INPUT_COUNT - 1 {
+                (x - 8.0, "end")
+            } else {
+                (x, "middle")
+            };
+
+            /*
+             * Label below the dot unless that would crowd the dashed
+             * equal-speed line; then label above.
+             */
+            let below = y + 18.0;
+
+            let label_y = if (below - equal_y).abs() < 12.0 {
+                equal_y + 14.0
+            } else {
+                below
+            };
+
+            writeln!(
+                svg,
+                r##"  <text x="{label_x:.2}" y="{label_y:.2}" class="value-label" fill="{}" text-anchor="{anchor}">{ratio:.2}×</text>"##,
+                winner.color(),
+            )
+                .unwrap();
+        }
+    }
+
+    /*
      * Annotate the BLAKE3 single-chunk elbow: the 64 B point uses a
      * different code path than the bulk sizes, and that is the whole story
      * of its shape.
@@ -1277,9 +1402,6 @@ fn generate_svg(
         ("BLAKE3 source", BLAKE3_SOURCE_INFO),
         ("SHA-256 source", SHA2_SOURCE_INFO),
         ("SHA-256 assembly source", SHA2_ASM_SOURCE_INFO),
-        ("SHA3-256 source", SHA3_SOURCE_INFO),
-        ("Keccak source", KECCAK_SOURCE_INFO),
-        ("Keccak assembly source", KECCAK_ASM_SOURCE_INFO),
     ] {
         writeln!(
             svg,
@@ -1293,7 +1415,7 @@ fn generate_svg(
     writeln!(svg, "  </metadata>").unwrap();
 
     /* Human-readable provenance: left-aligned, compact, de-emphasized. */
-    let provenance_top = PLOT_BOTTOM + 92.0;
+    let provenance_top = RATIO_BOTTOM + 85.0;
 
     writeln!(
         svg,
@@ -1330,13 +1452,10 @@ fn generate_svg(
             "Tag: {GIT_TAG} · Working tree: {GIT_CLEAN_STATUS}"
         ),
         format!(
-            "Crates: {} · {} (+{}) · {} (+{}, {})",
+            "Crates: {} · {} (+{})",
             package_name_and_version(BLAKE3_SOURCE_INFO),
             package_name_and_version(SHA2_SOURCE_INFO),
             package_name_and_version(SHA2_ASM_SOURCE_INFO),
-            package_name_and_version(SHA3_SOURCE_INFO),
-            package_name_and_version(KECCAK_SOURCE_INFO),
-            package_name_and_version(KECCAK_ASM_SOURCE_INFO),
         ),
         format!(
             "BLAKE3: single-threaded, Rayon not enabled · platform {} · full crate checksums embedded in this file's metadata element",
@@ -1408,7 +1527,7 @@ fn log_ticks(axis_min: f64, axis_max: f64) -> Vec<f64> {
     let mut ticks = Vec::new();
 
     for exponent in lowest_exponent..=highest_exponent {
-        for mantissa in [1.0, 2.0, 5.0] {
+        for mantissa in [1.0, 1.5, 2.0, 3.0, 5.0, 7.0] {
             let value = mantissa * 10.0_f64.powi(exponent);
 
             /*

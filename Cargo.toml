@@ -21,21 +21,15 @@ sysinfo = {
 
 # Assembly backends where sha2-asm / keccak-asm support the target.
 # sha2-asm 0.6.4 compile_error!s on all Windows targets; on x86-64 the
-# SHA-256 hot path is SHA-NI regardless. sha3 asm is AArch64-only.
+# SHA-256 hot path is SHA-NI regardless.
 [target.'cfg(not(windows))'.dependencies]
 sha2 = {
     version = "0.10",
     features = ["asm", "asm-aarch64"]
 }
 
-sha3 = {
-    version = "0.10",
-    features = ["asm"]
-}
-
 [target.'cfg(windows)'.dependencies]
 sha2 = { version = "0.10" }
-sha3 = { version = "0.10" }
 
 [build-dependencies]
 # Used to fingerprint a dirty benchmark working tree.

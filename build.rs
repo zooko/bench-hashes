@@ -50,21 +50,6 @@ fn main() {
         &lock,
         "sha2-asm",
     );
-    emit_required_package(
-        "SHA3_SOURCE_INFO",
-        &lock,
-        "sha3",
-    );
-    emit_required_package(
-        "KECCAK_SOURCE_INFO",
-        &lock,
-        "keccak",
-    );
-    emit_optional_package(
-        "KECCAK_ASM_SOURCE_INFO",
-        &lock,
-        "keccak-asm",
-    );
 
     emit_git_metadata(&manifest_dir);
 
