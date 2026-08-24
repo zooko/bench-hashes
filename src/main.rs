@@ -1312,16 +1312,28 @@ fn generate_svg(
                 (x, "middle")
             };
 
-            /*
-             * Label below the dot unless that would crowd the dashed
-             * equal-speed line; then label above.
-             */
+            let above = y - 9.0;
             let below = y + 18.0;
 
-            let label_y = if (below - equal_y).abs() < 12.0 {
-                equal_y + 14.0
+            /*
+             * Place the label on the side of the dot away from the dashed
+             * equal-speed line, clamped inside the panel. The series line
+             * is locally near dot height, so the away side is clear.
+             */
+            let label_y = if ratio >= 1.0 {
+                /* Dot is above the dashed line; label above the dot. */
+                if above < RATIO_TOP + 12.0 {
+                    below
+                } else {
+                    above
+                }
             } else {
-                below
+                /* Dot is below the dashed line; label below the dot. */
+                if below > RATIO_BOTTOM - 4.0 {
+                    above
+                } else {
+                    below
+                }
             };
 
             writeln!(
