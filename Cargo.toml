@@ -7,37 +7,32 @@ build = "build.rs"
 
 [dependencies]
 # Rayon is not enabled, so BLAKE3 remains single-threaded.
-blake3 = {
-    version = "1",
-    default-features = false,
-    features = ["std"]
-}
+[dependencies.blake3]
+version = "1"
+default-features = false
+features = ["std"]
 
 # Machine metadata does not need sysinfo's multithread feature.
-sysinfo = {
-    version = "0.30",
-    default-features = false
-}
+[dependencies.sysinfo]
+version = "0.30"
+default-features = false
 
 # Assembly backends where sha2-asm / keccak-asm support the target.
 # sha2-asm 0.6.4 compile_error!s on all Windows targets; on x86-64 the
 # SHA-256 hot path is SHA-NI regardless.
-[target.'cfg(not(windows))'.dependencies]
-sha2 = {
-    version = "0.10",
-    features = ["asm", "asm-aarch64"]
-}
+[target.'cfg(not(windows))'.dependencies.sha2]
+version = "0.10"
+features = ["asm", "asm-aarch64"]
 
 [target.'cfg(windows)'.dependencies]
 sha2 = { version = "0.10" }
 
 [build-dependencies]
 # Used to fingerprint a dirty benchmark working tree.
-blake3 = {
-    version = "1",
-    default-features = false,
-    features = ["std"]
-}
+[build-dependencies.blake3]
+version = "1"
+default-features = false
+features = ["std"]
 
 [profile.release]
 opt-level = 3
