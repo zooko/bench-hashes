@@ -1,0 +1,45 @@
+TIMESTAMP: 2026-10-18 14:19:49 UTC
+git source: https://github.com/zooko/bench-hashes
+git commit: 63ee3ae04f56c61db08de8f938a0854d4619de27
+git tag: v0.5.0+7b47c3b7a25176eb5c7678ad8aac56c72ee7556f (+2 commits)
+git clean status: clean
+bench-hashes version: 0.5.0+7b47c3b7a25176eb5c7678ad8aac56c72ee7556f
+CPU type: aarch64
+CPU count: 20
+OS type: linux6.14.0-1013-nvidia
+Rust compiler: rustc 1.99.0 (b940084d7 2026-09-28)
+Build target: aarch64-unknown-linux-gnu
+Target features: aes,bf16,bti,crc,dit,dotprod,dpb,dpb2,fcma,fhm,flagm,fp16,frintts,i8mm,jsconv,lor,lse,mte,neon,paca,pacg,pan,pmuv3,ras,rcpc,rcpc2,rdm,sb,sha2,sha3,sm4,spe,ssbs,sve,sve2,vh
+BLAKE3 source: blake3 1.8.7; crate archive SHA-256 6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae; source registry+https://github.com/rust-lang/crates.io-index
+SHA-256 source: sha2 0.10.9; crate archive SHA-256 a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283; source registry+https://github.com/rust-lang/crates.io-index
+SHA-256 assembly source: sha2-asm 0.6.4; crate archive SHA-256 b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab; source registry+https://github.com/rust-lang/crates.io-index
+BLAKE3 mode: single-threaded; Rayon not enabled
+
+BLAKE3 implementation selection:
+  selected platform: NEON
+     64 B: portable compression (one chunk; NEON bulk path not used)
+   4096 B: NEON hash_many (4-way SIMD)
+   16 KiB: NEON hash_many (4-way SIMD)
+    1 MiB: NEON hash_many (4-way SIMD)
+
+============================================================
+BENCHMARK SUMMARY
+============================================================
+
+Time per byte in ns/B; median (minimum–maximum), lower is better:
+  64 B:
+    BLAKE3  :  0.83 ( 0.82– 0.94)
+    SHA-256 :  0.76 ( 0.76– 0.77)
+
+  4096 B:
+    BLAKE3  :  0.49 ( 0.49– 0.49)
+    SHA-256 :  0.47 ( 0.47– 0.47)
+
+  16 KiB:
+    BLAKE3  :  0.49 ( 0.49– 0.54)
+    SHA-256 :  0.47 ( 0.47– 0.47)
+
+  1 MiB:
+    BLAKE3  :  0.49 ( 0.48– 0.54)
+    SHA-256 :  0.47 ( 0.47– 0.47)
+
